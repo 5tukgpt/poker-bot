@@ -234,3 +234,8 @@ Poker.code-workspace
 *.spec
 *.ipynb
 *.dmg
+
+# poker-bot AI engine additions
+poker/ai/models/*.json
+poker/ai/models/*.npz
+.venv/
