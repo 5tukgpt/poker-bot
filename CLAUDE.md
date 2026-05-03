@@ -60,19 +60,20 @@ python scripts/benchmark.py --hands 1000                # all strategies head-to
 
 ## Current Benchmark
 
-After 50K CFR iterations + 10K DQN training hands. 500 hands per matchup:
+After 20K CFR iterations (post-bug-fix) + 10K DQN training hands. 500 hands per matchup:
 
 ```
            heuristic       cfr       dqn  ensemble
-heuristic        ---   +1860.0      -0.6     +40.5
-cfr          -1860.0       ---   -1500.2   -1855.0
-dqn             +0.6   +1500.2       ---      +8.6
-ensemble       -40.5   +1855.0      -8.6       ---
+heuristic        ---    +413.2      -3.0    +158.5
+cfr           -413.2       ---    -274.8    -451.1
+dqn             +3.0    +274.8       ---     +13.3
+ensemble      -158.5    +451.1     -13.3       ---
 ```
 
-Ranking: **heuristic ≈ ensemble ≈ dqn** (within 50 BB/100), CFR far behind.
+Ranking: **dqn ≈ heuristic > ensemble > cfr**
 
 Notes:
 - DQN reached parity with heuristic after 10K self-play hands (epsilon=0.05)
-- CFR's 5-bucket abstraction is too crude → known limitation, needs richer abstraction or longer training
-- Ensemble is dragged down slightly by CFR's bad votes; rebalancing weights could help
+- CFR fixed (4-5x improvement vs prior buggy version) — remaining gap from crude 5-bucket abstraction
+- CFR strategy table grew from 5K to 21K info sets after the bug fix exposed full game tree
+- Ensemble dragged down by CFR's residual weakness; rebalancing weights or removing CFR vote could help
