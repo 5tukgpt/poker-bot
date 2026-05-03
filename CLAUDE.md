@@ -58,11 +58,21 @@ python poker/ai/train/train_dqn.py --hands 10000       # ~40s
 python scripts/benchmark.py --hands 1000                # all strategies head-to-head
 ```
 
-## Current Benchmark (after light training)
+## Current Benchmark
 
-500 hands per matchup:
-- heuristic vs cfr: heuristic wins +1440 BB/100 (CFR needs more iterations + better abstraction)
-- heuristic vs dqn: heuristic wins +2190 BB/100 (DQN needs ~50K hands to overcome random exploration)
-- cfr vs dqn: dqn wins +2518 BB/100
+After 50K CFR iterations + 10K DQN training hands. 500 hands per matchup:
 
-Heuristic is the strongest because it uses real Monte Carlo equity (100 sims/decision). CFR and DQN need more training to compete.
+```
+           heuristic       cfr       dqn  ensemble
+heuristic        ---   +1860.0      -0.6     +40.5
+cfr          -1860.0       ---   -1500.2   -1855.0
+dqn             +0.6   +1500.2       ---      +8.6
+ensemble       -40.5   +1855.0      -8.6       ---
+```
+
+Ranking: **heuristic ≈ ensemble ≈ dqn** (within 50 BB/100), CFR far behind.
+
+Notes:
+- DQN reached parity with heuristic after 10K self-play hands (epsilon=0.05)
+- CFR's 5-bucket abstraction is too crude → known limitation, needs richer abstraction or longer training
+- Ensemble is dragged down slightly by CFR's bad votes; rebalancing weights could help
