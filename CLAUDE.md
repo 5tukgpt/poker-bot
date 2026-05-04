@@ -60,16 +60,22 @@ python scripts/benchmark.py --hands 1000                # all strategies head-to
 
 ## Current Benchmark
 
-2000 hands per matchup (tighter variance):
+1500 hands per matchup (4 strategies):
 
 ```
-               gto_chart   heuristic         dqn
-gto_chart            ---       -50.0        -6.0
-heuristic          +50.0         ---       -14.3
-dqn                 +6.0       +14.3         ---
+                    book   gto_chart   heuristic         dqn
+book                 ---       -16.0       -30.3       +23.5
+gto_chart          +16.0         ---      -117.6        +8.2
+heuristic          +30.3      +117.6         ---       -20.1
+dqn                -23.5        -8.2       +20.1         ---
 ```
 
-Ranking: **heuristic > dqn > gto_chart**, all within 50 BB/100.
+Ranking: **heuristic > book ≈ dqn > gto_chart**
+
+Surprising finding: pure equity-driven heuristic beats every rule-based
+approach. Bot-vs-bot in HU NLHE doesn't reward bluffing — opponents won't
+fold like humans do, so c-bet frequencies and balanced ranges give up
+edges. Against unknown opponents, math beats rules.
 
 ## Strategy Inventory
 
@@ -78,6 +84,7 @@ Ranking: **heuristic > dqn > gto_chart**, all within 50 BB/100.
 | `heuristic` | Preflop categories + Monte Carlo equity vs pot odds | Strongest baseline |
 | `dqn` | Pure-numpy Double DQN, 64-dim state, 10K self-play hands | Near-parity with heuristic |
 | `gto_chart` | Hard-coded HU NLHE preflop ranges + equity postflop | Competitive baseline, no training cost |
+| `book` | "By the book" HU NLHE — c-bet logic, board texture, mixed strategies, proper bet sizing | Comprehensive but loses to heuristic; rules give up edge in bot-vs-bot |
 | `cfr` | External-sampling MCCFR with 5-bucket rule abstraction | **Deprecated** — k-means experiment proved CFR-from-scratch is impractical on a laptop (3.26M info sets after 30K iters, far from converged) |
 | `ensemble` | Weighted vote across heuristic + CFR + DQN | Available but currently dragged by stale CFR |
 
