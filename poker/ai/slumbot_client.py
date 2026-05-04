@@ -216,13 +216,28 @@ def parse_action_history(action_str: str, our_pos: int) -> list[Action]:
 
 
 def slumbot_state_to_gamestate(
-    response: dict, action: str, our_pos: int,
+    response: dict, action: str, client_pos: int,
 ) -> GameState | None:
-    """Build a GameState from Slumbot's response. Returns None if hand over."""
+    """Build a GameState from Slumbot's response. Returns None if hand over.
+
+    Slumbot's `client_pos` semantics (verified empirically):
+      client_pos = 0 → we are BIG BLIND  (act second preflop, first postflop)
+      client_pos = 1 → we are BUTTON/SB  (act first preflop, second postflop)
+
+    Slumbot's action parser uses action-position numbering where:
+      action_pos = 0 → SB/button (acts first preflop)
+      action_pos = 1 → BB
+
+    So our action-position is the INVERSE of client_pos:
+      our_action_pos = 1 - client_pos
+    """
+    our_action_pos = 1 - client_pos  # this is what the action parser uses
+    opp_action_pos = client_pos       # opponent's action-pos
+
     parsed = parse_slumbot_action(action)
     if parsed.get("pos", -1) == -1:
         return None
-    if parsed["pos"] != our_pos:
+    if parsed["pos"] != our_action_pos:
         return None  # not our turn
 
     hole_strs = response.get("hole_cards", [])
@@ -232,28 +247,60 @@ def slumbot_state_to_gamestate(
 
     street = {0: Street.PREFLOP, 1: Street.FLOP, 2: Street.TURN, 3: Street.RIVER}[parsed["st"]]
 
-    # Slumbot uses position 0 = button (SB), 1 = BB.
-    # In our engine, we use button index for who has the button.
-    # We're at our_pos; opponent at 1 - our_pos.
-    our_total_in = parsed["total_last_bet_to"] if parsed["last_bettor"] != our_pos else 0
-    opp_total_in = parsed["total_last_bet_to"] if parsed["last_bettor"] == our_pos else parsed["total_last_bet_to"]
-
-    # Simpler: pot = total chips put in by both
-    # If last bettor was opponent, their bet equals total_last_bet_to.
-    # Our committed equals total_last_bet_to - last_bet_size (we matched up to before their last action).
-    if parsed["last_bettor"] == our_pos:
+    # Compute committed chips for each player.
+    # parsed["last_bettor"] is in action-pos terms.
+    if parsed["last_bettor"] == our_action_pos:
         our_committed = parsed["total_last_bet_to"]
         opp_committed = parsed["total_last_bet_to"] - parsed["last_bet_size"]
     else:
         opp_committed = parsed["total_last_bet_to"]
         our_committed = parsed["total_last_bet_to"] - parsed["last_bet_size"]
 
+    # On preflop, blinds are already posted but action parser starts at street_last_bet_to=BB.
+    # On postflop, both bets reset to 0.
+    if street == Street.PREFLOP:
+        # Account for posted blinds in our committed
+        # If we're SB (our_action_pos=0) and haven't called yet, our_committed = SB
+        # If we're BB (our_action_pos=1) and haven't acted yet, our_committed = BB
+        # The parser's street_last_bet_to and last_bettor calc assumes parser pos 0 starts the betting
+        # We've already accounted for that above.
+        pass
+
     pot = our_committed + opp_committed
     our_stack = STACK_SIZE - our_committed
     opp_stack = STACK_SIZE - opp_committed
 
-    # Build state with us as player 0 always for strategy logic
-    # (our strategies look at state.current_player; we pass 0)
+    # Internal state always has us as player 0, opponent as player 1.
+    # Button index in our state: 0 if we are SB, 1 if opponent is SB.
+    # client_pos=1 (we're SB) → button=0 (we have it)
+    # client_pos=0 (we're BB) → button=1 (opponent has it)
+    button_in_our_state = 0 if client_pos == 1 else 1
+
+    # Per-street current bets (chips put in this round only)
+    if street == Street.PREFLOP:
+        # Determine SB and BB committed amounts from action parser state
+        # Parser's street_last_bet_to is the "bet to" amount on this street
+        if parsed["last_bettor"] == our_action_pos:
+            our_round_bet = parsed["street_last_bet_to"]
+            opp_round_bet = parsed["street_last_bet_to"] - parsed["last_bet_size"]
+        else:
+            opp_round_bet = parsed["street_last_bet_to"]
+            our_round_bet = parsed["street_last_bet_to"] - parsed["last_bet_size"]
+        # Floor at the blind amounts
+        if our_action_pos == 0:  # we're SB
+            our_round_bet = max(our_round_bet, SMALL_BLIND)
+            opp_round_bet = max(opp_round_bet, BIG_BLIND)
+        else:  # we're BB
+            our_round_bet = max(our_round_bet, BIG_BLIND)
+            opp_round_bet = max(opp_round_bet, SMALL_BLIND)
+    else:
+        if parsed["last_bettor"] == our_action_pos:
+            our_round_bet = parsed["street_last_bet_to"]
+            opp_round_bet = parsed["street_last_bet_to"] - parsed["last_bet_size"]
+        else:
+            opp_round_bet = parsed["street_last_bet_to"]
+            our_round_bet = parsed["street_last_bet_to"] - parsed["last_bet_size"]
+
     state = GameState(
         num_players=2,
         stacks=[our_stack, opp_stack],
@@ -261,26 +308,32 @@ def slumbot_state_to_gamestate(
         board=board,
         hole_cards=[hole, []],
         street=street,
-        current_player=0,
-        button=0 if our_pos == 0 else 1,
+        current_player=0,  # always us in our internal convention
+        button=button_in_our_state,
         small_blind=SMALL_BLIND,
         big_blind=BIG_BLIND,
-        current_bets=[
-            our_committed if street != Street.PREFLOP else (parsed["street_last_bet_to"] if parsed["last_bettor"] == our_pos else parsed["street_last_bet_to"] - parsed["last_bet_size"]),
-            opp_committed if street != Street.PREFLOP else (parsed["street_last_bet_to"] if parsed["last_bettor"] != our_pos else parsed["street_last_bet_to"] - parsed["last_bet_size"]),
-        ],
-        action_history=_remap_history(parse_action_history(action, our_pos), our_pos),
+        current_bets=[our_round_bet, opp_round_bet],
+        action_history=_remap_history(parse_action_history(action, client_pos), client_pos),
         folded=[False, False],
         all_in=[our_stack == 0, opp_stack == 0],
     )
     return state
 
 
-def _remap_history(actions: list[Action], our_pos: int) -> list[Action]:
-    """Remap player_idx so we are always player 0 in our internal state."""
-    if our_pos == 0:
-        return actions  # already aligned
-    return [Action(a.type, a.amount, 1 - a.player_idx, street=a.street) for a in actions]
+def _remap_history(actions: list[Action], client_pos: int) -> list[Action]:
+    """Remap player_idx so we are always player 0 in our internal state.
+
+    Parser labels actions by action-pos (0=SB, 1=BB).
+    Our action-pos is (1 - client_pos). Opponent's is client_pos.
+    We want our actions → player_idx 0, opponent's → player_idx 1.
+    """
+    our_action_pos = 1 - client_pos
+    return [
+        Action(a.type, a.amount,
+               0 if a.player_idx == our_action_pos else 1,
+               street=a.street)
+        for a in actions
+    ]
 
 
 def our_action_to_slumbot(action: Action, parsed_state: dict) -> str:
@@ -318,34 +371,35 @@ def play_hand(strategy: PokerStrategy, token: str | None) -> tuple[int, str]:
 
     while True:
         action_str = response.get("action", "")
-        our_pos = response.get("client_pos", 0)
+        client_pos = response.get("client_pos", 0)
+        our_action_pos = 1 - client_pos
         winnings = response.get("winnings")
         if winnings is not None:
-            _notify_end_of_hand(strategy, response, action_str, our_pos, winnings, last_state)
+            _notify_end_of_hand(strategy, response, action_str, client_pos, winnings, last_state)
             return winnings, token
 
         parsed = parse_slumbot_action(action_str)
         if parsed.get("pos") == -1:
             w = response.get("winnings", 0)
-            _notify_end_of_hand(strategy, response, action_str, our_pos, w, last_state)
+            _notify_end_of_hand(strategy, response, action_str, client_pos, w, last_state)
             return w, token
 
-        if parsed["pos"] != our_pos:
+        if parsed["pos"] != our_action_pos:
             w = response.get("winnings", 0)
-            _notify_end_of_hand(strategy, response, action_str, our_pos, w, last_state)
+            _notify_end_of_hand(strategy, response, action_str, client_pos, w, last_state)
             return w, token
 
-        state = slumbot_state_to_gamestate(response, action_str, our_pos)
+        state = slumbot_state_to_gamestate(response, action_str, client_pos)
         if state is None:
             w = response.get("winnings", 0)
-            _notify_end_of_hand(strategy, response, action_str, our_pos, w, last_state)
+            _notify_end_of_hand(strategy, response, action_str, client_pos, w, last_state)
             return w, token
 
         last_state = state
         legal = state.legal_actions()
         if not legal:
             w = response.get("winnings", 0)
-            _notify_end_of_hand(strategy, response, action_str, our_pos, w, last_state)
+            _notify_end_of_hand(strategy, response, action_str, client_pos, w, last_state)
             return w, token
 
         action = strategy.choose_action(state, legal)
@@ -367,26 +421,25 @@ def _notify_end_of_hand(
     strategy: PokerStrategy,
     response: dict,
     action_str: str,
-    our_pos: int,
+    client_pos: int,
     winnings: int,
     last_state: GameState | None,
 ) -> None:
     """Build a final-state and call notify_result so strategies can commit per-hand stats."""
     if last_state is None:
-        # No state was ever built (rare — Slumbot acted and we folded immediately?)
-        # Build minimal state for stats tracking
         from .engine.game_state import Street
         hole_strs = response.get("hole_cards", [])
         board_strs = response.get("board", [])
         hole = [card_str_to_int(c) for c in hole_strs] if hole_strs else []
         board = [card_str_to_int(c) for c in board_strs] if board_strs else []
+        # client_pos=1 (we're SB) → button=0. client_pos=0 (we're BB) → button=1.
         last_state = GameState(
             num_players=2,
             stacks=[STACK_SIZE, STACK_SIZE],
             pot=0, board=board,
             hole_cards=[hole, []],
             street=Street.PREFLOP, current_player=0,
-            button=0 if our_pos == 0 else 1,
+            button=0 if client_pos == 1 else 1,
             small_blind=SMALL_BLIND, big_blind=BIG_BLIND,
             current_bets=[0, 0], action_history=[],
             folded=[False, False], all_in=[False, False],
@@ -395,7 +448,7 @@ def _notify_end_of_hand(
     # Update action_history with the final action sequence so strategies can observe
     if action_str:
         try:
-            final_actions = parse_action_history(action_str, our_pos)
+            final_actions = parse_action_history(action_str, client_pos)
             last_state = GameState(
                 num_players=last_state.num_players,
                 stacks=last_state.stacks,
@@ -408,7 +461,7 @@ def _notify_end_of_hand(
                 small_blind=last_state.small_blind,
                 big_blind=last_state.big_blind,
                 current_bets=last_state.current_bets,
-                action_history=_remap_history(final_actions, our_pos),
+                action_history=_remap_history(final_actions, client_pos),
                 folded=last_state.folded,
                 all_in=last_state.all_in,
             )
