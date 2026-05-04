@@ -58,24 +58,43 @@ python poker/ai/train/train_dqn.py --hands 10000       # ~40s
 python scripts/benchmark.py --hands 1000                # all strategies head-to-head
 ```
 
-## Current Benchmark
-
-1500 hands per matchup (4 strategies):
+## Current Benchmark — In-house cross-product (1000 hands/matchup)
 
 ```
-                    book   gto_chart   heuristic         dqn
-book                 ---       -16.0       -30.3       +23.5
-gto_chart          +16.0         ---      -117.6        +8.2
-heuristic          +30.3      +117.6         ---       -20.1
-dqn                -23.5        -8.2       +20.1         ---
+               heuristic         dqn   gto_chart        book
+heuristic            ---       -50.1       +35.8       +57.0
+dqn                +42.7         ---       +14.3        +0.0
+gto_chart          -10.1       -17.4         ---       -22.0
+book               -52.5        -7.1       -62.6         ---
 ```
 
-Ranking: **heuristic > book ≈ dqn > gto_chart**
+**In-house ranking (avg BB/100):** dqn (+19) > heuristic (+14) > gto_chart (-16) > book (-41)
 
-Surprising finding: pure equity-driven heuristic beats every rule-based
-approach. Bot-vs-bot in HU NLHE doesn't reward bluffing — opponents won't
-fold like humans do, so c-bet frequencies and balanced ranges give up
-edges. Against unknown opponents, math beats rules.
+## Slumbot Benchmark (1000 hands each)
+
+Slumbot is the strongest publicly available HU NLHE bot.
+
+| Strategy | BB/100 vs Slumbot |
+|---|---|
+| Heuristic | -66.3 |
+| DQN | -68.7 |
+| Adaptive | -67.2 |
+
+**All three are statistically tied** within ±25 BB/100 confidence interval at 1000 hands.
+
+**Known bug:** `slumbot_state_to_gamestate` has translation issues causing
+strategies to misplay (e.g., adaptive open-folding from BB losing 100 chips/hand).
+The -65 BB/100 deficit vs Slumbot is partly real, partly the bug. Need to fix
+the state translation before claiming definitive Slumbot performance.
+
+## Sessions
+
+Big developments and fixes are recorded in commit history. Notable:
+- CFR was algorithmically buggy until commit dc3f126 (4-5x improvement)
+- DQN matches heuristic strength after 10K self-play hands
+- "By the book" HU NLHE strategy added but loses to pure-equity heuristic
+- Opponent modeling + AdaptiveStrategy built (commit 186ade9)
+- Cross-product matrix tuning (commit 0b94c84) confirmed DQN as strongest baseline
 
 ## Strategy Inventory
 
