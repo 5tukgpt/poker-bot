@@ -200,7 +200,12 @@ HTML = r"""<!DOCTYPE html>
   </div>
 
   <div class="panel">
-    <h2>Click any card to assign</h2>
+    <h2>
+      Click a card OR type
+      <span id="hint" style="color: #ffd54f; margin-left: 12px; font-size: 12px;">
+        Press rank (2-9, T, J, Q, K, A) then suit (C, H, D, S). Tab=next slot. Backspace=clear.
+      </span>
+    </h2>
     <div class="deck" id="deck"></div>
   </div>
 
@@ -234,6 +239,7 @@ let holeCards = [null, null];
 let boardCards = [null, null, null, null, null];
 let activeSlot = 'hole-0';
 let computeTimeout = null;
+let pendingRank = null;  // when user pressed rank, waiting for suit
 
 function buildDeck() {
   const deck = document.getElementById('deck');
@@ -308,8 +314,13 @@ function render() {
       s.classList.add('filled');
       if (RED_SUITS.has(code[1])) s.classList.add('red');
       s.textContent = code[0] + SUIT_SYMBOLS[code[1]];
+    } else if (slot === activeSlot && pendingRank) {
+      // Show pending rank in active slot, dimmed
+      s.textContent = pendingRank + '?';
+      s.style.color = '#ffd54f';
     } else {
       s.textContent = '';
+      s.style.color = '';
     }
     if (slot === activeSlot) s.classList.add('active');
     s.onclick = () => clickSlot(slot);
@@ -318,6 +329,91 @@ function render() {
     c.classList.toggle('used', cardInUse(c.dataset.code));
   });
 }
+
+// Keyboard input: rank then suit
+const RANK_KEY = {
+  '1': 'A', 'A': 'A',           // 1 also maps to ace
+  '2': '2', '3': '3', '4': '4', '5': '5', '6': '6',
+  '7': '7', '8': '8', '9': '9',
+  'T': 'T', 'J': 'J', 'Q': 'Q', 'K': 'K',
+};
+const SUIT_KEY = { 'C': 'c', 'H': 'h', 'D': 'd', 'S': 's' };
+
+function handleKeyboard(e) {
+  // Don't intercept when typing in inputs
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+  const key = e.key.toUpperCase();
+
+  // Special keys
+  if (e.key === 'Tab') {
+    e.preventDefault();
+    advanceSlot(e.shiftKey ? -1 : 1);
+    pendingRank = null;
+    render();
+    return;
+  }
+  if (e.key === 'Backspace' || e.key === 'Delete') {
+    e.preventDefault();
+    if (pendingRank) {
+      pendingRank = null;
+    } else {
+      clearActiveSlot();
+    }
+    render();
+    return;
+  }
+  if (e.key === 'Escape') {
+    pendingRank = null;
+    render();
+    return;
+  }
+
+  if (pendingRank === null) {
+    if (RANK_KEY[key]) {
+      pendingRank = RANK_KEY[key];
+      render();
+    }
+  } else {
+    if (SUIT_KEY[key]) {
+      const code = pendingRank + SUIT_KEY[key];
+      pendingRank = null;
+      if (!cardInUse(code)) {
+        assignCard(code);
+      } else {
+        render();
+      }
+    } else if (RANK_KEY[key]) {
+      // Replace pending rank
+      pendingRank = RANK_KEY[key];
+      render();
+    }
+  }
+}
+
+function advanceSlot(direction) {
+  const order = ['hole-0', 'hole-1', 'board-0', 'board-1', 'board-2', 'board-3', 'board-4'];
+  const idx = order.indexOf(activeSlot);
+  if (idx < 0) {
+    activeSlot = 'hole-0';
+    return;
+  }
+  const next = (idx + direction + order.length) % order.length;
+  activeSlot = order[next];
+}
+
+function clearActiveSlot() {
+  if (activeSlot.startsWith('hole-')) {
+    const idx = parseInt(activeSlot.split('-')[1]);
+    holeCards[idx] = null;
+  } else if (activeSlot.startsWith('board-')) {
+    const idx = parseInt(activeSlot.split('-')[1]);
+    boardCards[idx] = null;
+  }
+  triggerCompute();
+}
+
+document.addEventListener('keydown', handleKeyboard);
 
 function triggerCompute() {
   clearTimeout(computeTimeout);
