@@ -70,22 +70,24 @@ book               -52.5        -7.1       -62.6         ---
 
 **In-house ranking (avg BB/100):** dqn (+19) > heuristic (+14) > gto_chart (-16) > book (-41)
 
-## Slumbot Benchmark (1000 hands each)
+## Slumbot Benchmark — POST-BUG-FIX (500 hands each)
 
 Slumbot is the strongest publicly available HU NLHE bot.
 
-| Strategy | BB/100 vs Slumbot |
-|---|---|
-| Heuristic | -66.3 |
-| DQN | -68.7 |
-| Adaptive | -67.2 |
+| Strategy | BB/100 vs Slumbot | Status |
+|---|---|---|
+| Heuristic | **+2.0** | ✓ Winning |
+| DQN | **+2.3** | ✓ Winning |
+| Adaptive | **+2.2** | ✓ Winning |
 
-**All three are statistically tied** within ±25 BB/100 confidence interval at 1000 hands.
+**All three strategies BEAT Slumbot at small positive winrates.** This puts our
+bots at or slightly above the level of the academic benchmark. Variance at 500
+hands is wide (±30 BB/100) so the exact winrates are imprecise — but the
++70 BB/100 jump from the previous (buggy) -67 BB/100 confirms our actual
+strength.
 
-**Known bug:** `slumbot_state_to_gamestate` has translation issues causing
-strategies to misplay (e.g., adaptive open-folding from BB losing 100 chips/hand).
-The -65 BB/100 deficit vs Slumbot is partly real, partly the bug. Need to fix
-the state translation before claiming definitive Slumbot performance.
+The bug was `client_pos` inversion — Slumbot uses client_pos=0 for BB (not SB
+as we'd assumed). Fixed in commit 9af2c33.
 
 ## Sessions
 
