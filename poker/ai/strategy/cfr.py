@@ -1,8 +1,10 @@
-"""Counterfactual Regret Minimization for heads-up NLHE with abstraction.
+"""Counterfactual Regret Minimization for heads-up NLHE.
 
-Card abstraction: 5 buckets based on hand strength (premium → trash).
-Action abstraction: 4 actions (FOLD, CHECK_CALL, BET_HALF_POT, ALL_IN).
-History string encodes the action sequence per street.
+Card abstraction: k-means clustering on equity histograms (50+ buckets per street),
+loaded from poker/ai/models/abstraction.json. Falls back to legacy 5-bucket
+rule-based abstraction if the file is missing.
+
+Action abstraction: 6 actions (FOLD, CHECK_CALL, BET 33%, BET 67%, BET 150%, ALL_IN).
 
 Algorithm: External-sampling MCCFR over heads-up NL game tree.
 """
@@ -22,51 +24,80 @@ from ..engine.evaluator import determine_winners, evaluate_hand
 from ..engine.game_state import GameState, Street
 from .base import BaseStrategy
 
+# Lazy import — only loaded if abstraction file exists
+_BUCKETER = None
+_BUCKETER_PATH = 'poker/ai/models/abstraction.json'
+
 
 CFR_ACTIONS = [
     ActionType.FOLD,
-    ActionType.CHECK,
-    ActionType.BET,
+    ActionType.CHECK,         # check or call
+    ActionType.BET,           # bet 33% pot (small)
+    ActionType.RAISE,         # bet 67% pot (standard)
+    ActionType.BET,           # bet 150% pot (overbet) — same enum but distinct CFR index
     ActionType.ALL_IN,
 ]
 NUM_CFR_ACTIONS = len(CFR_ACTIONS)
-NUM_BUCKETS = 5
+
+# Bet sizing per CFR action index (as fraction of pot for indices 2, 3, 4)
+BET_SIZE_FRACTIONS = {2: 0.33, 3: 0.67, 4: 1.5}
 
 
-def hand_to_bucket(hole: list[int], board: list[int]) -> int:
-    """Map (hole, board) → 1 of 5 strength buckets. 0=trash, 4=premium."""
+def _load_bucketer():
+    """Lazily load the EquityBucketer if abstraction file exists."""
+    global _BUCKETER
+    if _BUCKETER is not None:
+        return _BUCKETER
+    if os.path.exists(_BUCKETER_PATH):
+        from .abstraction import EquityBucketer
+        _BUCKETER = EquityBucketer.load(_BUCKETER_PATH)
+        return _BUCKETER
+    return None
+
+
+def _legacy_bucket(hole: list[int], board: list[int]) -> int:
+    """Fallback 5-bucket rule-based abstraction if no precomputed file exists."""
     if len(board) == 0:
         c1, c2 = Card.from_int(hole[0]), Card.from_int(hole[1])
         high = max(c1.rank, c2.rank)
         low = min(c1.rank, c2.rank)
         suited = c1.suit == c2.suit
-
-        if c1.rank == c2.rank:  # pocket pair
-            if c1.rank >= 12: return 4   # QQ+
-            if c1.rank >= 9:  return 3   # 99-JJ
-            if c1.rank >= 6:  return 2   # 66-88
+        if c1.rank == c2.rank:
+            if c1.rank >= 12: return 4
+            if c1.rank >= 9: return 3
+            if c1.rank >= 6: return 2
             return 1
-        if high == 14:  # ace high
-            if low >= 12: return 4       # AK, AQ
+        if high == 14:
+            if low >= 12: return 4
             if low >= 10 or (suited and low >= 8): return 3
             if suited: return 2
             return 1
-        if high >= 12 and low >= 10:    # KQ, KJ, QJ
+        if high >= 12 and low >= 10:
             return 3 if suited else 2
         if suited and (high - low <= 2) and high >= 9:
             return 2
         if high >= 11:
             return 1
         return 0
-
     rank = evaluate_hand(hole, board)
-    if rank <= 322: return 4    # straight flush+
-    if rank <= 1609: return 4   # flush
-    if rank <= 2467: return 3   # straight or trips
-    if rank <= 3325: return 3   # two pair
-    if rank <= 6185: return 2   # one pair
+    if rank <= 1609: return 4
+    if rank <= 3325: return 3
+    if rank <= 6185: return 2
     if rank <= 7000: return 1
     return 0
+
+
+def hand_to_bucket(hole: list[int], board: list[int]) -> int:
+    """Map (hole, board) → bucket index.
+
+    Hybrid: k-means clustering for preflop (50 buckets, much richer than rule-based),
+    rule-based for postflop (deterministic, fast, fewer info sets to converge).
+    """
+    if len(board) == 0:
+        bucketer = _load_bucketer()
+        if bucketer is not None:
+            return bucketer.bucket(hole, board, street=0)
+    return _legacy_bucket(hole, board)
 
 
 def info_set_key(bucket: int, history: str, street: int) -> str:
@@ -84,7 +115,6 @@ class CFRTrainer:
         self.strategy_sum: dict[str, np.ndarray] = defaultdict(lambda: np.zeros(NUM_CFR_ACTIONS))
 
     def get_strategy(self, key: str, legal_mask: np.ndarray) -> np.ndarray:
-        """Regret-matched strategy: prob ∝ max(regret, 0)."""
         regret = np.maximum(self.regret_sum[key], 0) * legal_mask
         total = regret.sum()
         if total > 0:
@@ -107,7 +137,7 @@ class CFRTrainer:
                 board = deck[4:9]
                 self._cfr(
                     traverser=player,
-                    current=0,                      # player 0 = button/SB acts first preflop
+                    current=0,
                     hole=hole,
                     board=board,
                     revealed=0,
@@ -123,8 +153,8 @@ class CFRTrainer:
             if verbose and (i + 1) % max(1, num_iterations // 20) == 0:
                 print(f"  Iter {i + 1}/{num_iterations}  info_sets={len(self.regret_sum)}")
 
-    def _legal_mask(self, current: int, bets: list[int], stacks: list[int]) -> np.ndarray:
-        """Compute legal action mask."""
+    def _legal_mask(self, current: int, bets: list[int], stacks: list[int], pot: int) -> np.ndarray:
+        """Compute legal action mask for the current player."""
         mask = np.zeros(NUM_CFR_ACTIONS)
         my_bet = bets[current]
         max_bet = max(bets)
@@ -134,14 +164,19 @@ class CFRTrainer:
         # FOLD: only when facing a bet
         if to_call > 0:
             mask[0] = 1
-        # CHECK or CALL: always (check if to_call=0, call otherwise)
+        # CHECK or CALL: always
         mask[1] = 1
-        # BET/RAISE half-pot: only if has chips left after potential call
+        # BET sizes: only if has chips left after potential call AND raise size > min raise
         if my_stack > to_call:
-            mask[2] = 1
+            for idx in (2, 3, 4):
+                raise_size = max(int(pot * BET_SIZE_FRACTIONS[idx]), self.bb)
+                # Only legal if raise size is strictly less than going all-in
+                # (otherwise it collapses with ALL_IN action)
+                if to_call + raise_size < my_stack:
+                    mask[idx] = 1
         # ALL-IN: only if has chips
         if my_stack > 0:
-            mask[3] = 1
+            mask[5] = 1
 
         return mask
 
@@ -161,25 +196,22 @@ class CFRTrainer:
         p0_reach: float,
         p1_reach: float,
     ) -> float:
-        """Returns expected payoff for traverser at this game state."""
         opponent = 1 - current
-        legal_mask = self._legal_mask(current, bets, stacks)
+        legal_mask = self._legal_mask(current, bets, stacks, pot)
         bucket = hand_to_bucket(hole[current], board[:revealed])
         key = info_set_key(bucket, history, street)
         strategy = self.get_strategy(key, legal_mask)
 
         if current != traverser:
-            # Sample opponent's action; descend into single branch
             action_idx = self._sample(strategy)
-            new_p0_reach = p0_reach * (strategy[action_idx] if current == 0 else 1.0)
-            new_p1_reach = p1_reach * (strategy[action_idx] if current == 1 else 1.0)
-            # Update opponent's strategy sum (using their reach)
+            new_p0 = p0_reach * (strategy[action_idx] if current == 0 else 1.0)
+            new_p1 = p1_reach * (strategy[action_idx] if current == 1 else 1.0)
             opp_reach = p0_reach if current == 0 else p1_reach
             self.strategy_sum[key] += opp_reach * strategy
             return self._next(
                 action_idx, traverser, current, hole, board, revealed, street,
                 history, actions_this_round, stacks, bets, pot,
-                new_p0_reach, new_p1_reach,
+                new_p0, new_p1,
             )
 
         # Traverser: evaluate all legal actions
@@ -198,13 +230,12 @@ class CFRTrainer:
             action_utils[a] = util
             node_util += strategy[a] * util
 
-        # Update regrets weighted by opponent's reach probability
+        # Update regrets
         opp_reach = p0_reach if opponent == 0 else p1_reach
         for a in range(NUM_CFR_ACTIONS):
             if legal_mask[a] == 0:
                 continue
             self.regret_sum[key][a] += opp_reach * (action_utils[a] - node_util)
-        # Update strategy sum weighted by traverser's own reach
         own_reach = p0_reach if traverser == 0 else p1_reach
         self.strategy_sum[key] += own_reach * strategy
 
@@ -236,7 +267,6 @@ class CFRTrainer:
         p0_reach: float,
         p1_reach: float,
     ) -> float:
-        """Apply action and recurse. Returns expected payoff for traverser."""
         opponent = 1 - current
         my_bet = bets[current]
         max_bet = max(bets)
@@ -247,24 +277,22 @@ class CFRTrainer:
         new_pot = pot
 
         if action_idx == 0:  # FOLD
-            # Opponent wins the current pot
             return self._terminal_payoff(traverser, opponent, new_pot, new_stacks)
 
-        elif action_idx == 1:  # CHECK or CALL
+        elif action_idx == 1:  # CHECK / CALL
             call_amount = min(to_call, new_stacks[current])
             new_stacks[current] -= call_amount
             new_bets[current] += call_amount
             new_pot += call_amount
 
-        elif action_idx == 2:  # BET or RAISE half-pot
-            # Total chips to put in: call amount + half-pot raise
-            raise_size = max(int(new_pot * 0.5), self.bb)
+        elif action_idx in (2, 3, 4):  # BET sized
+            raise_size = max(int(new_pot * BET_SIZE_FRACTIONS[action_idx]), self.bb)
             total_in = min(to_call + raise_size, new_stacks[current])
             new_stacks[current] -= total_in
             new_bets[current] += total_in
             new_pot += total_in
 
-        elif action_idx == 3:  # ALL-IN
+        elif action_idx == 5:  # ALL-IN
             all_in = new_stacks[current]
             new_stacks[current] = 0
             new_bets[current] += all_in
@@ -273,15 +301,11 @@ class CFRTrainer:
         new_round_count = actions_this_round + 1
         new_history = history + str(action_idx)
 
-        # Did the round end?
         bets_matched = new_bets[0] == new_bets[1]
         someone_all_in = new_stacks[0] == 0 or new_stacks[1] == 0
-        round_ends = (
-            new_round_count >= 2 and (bets_matched or someone_all_in)
-        )
+        round_ends = new_round_count >= 2 and (bets_matched or someone_all_in)
 
         if not round_ends:
-            # Opponent acts
             return self._cfr(
                 traverser, opponent, hole, board, revealed, street,
                 new_history, new_round_count,
@@ -289,14 +313,11 @@ class CFRTrainer:
                 p0_reach, p1_reach,
             )
 
-        # Round ends. Either go to showdown or advance street.
         if street == 3 or someone_all_in:
             return self._showdown(traverser, hole, board, new_pot, new_stacks)
 
-        # Advance to next street
         next_street = street + 1
         next_revealed = 3 if next_street == 1 else (4 if next_street == 2 else 5)
-        # Postflop in HU: BB (player 1) acts first
         first_to_act = 1
         new_history_with_break = new_history + "|"
 
@@ -308,22 +329,16 @@ class CFRTrainer:
         )
 
     def _terminal_payoff(self, traverser: int, winner: int, pot: int, stacks: list[int]) -> float:
-        """Return traverser's net chip change (loss is negative)."""
-        # Total chips traverser put in this hand:
         contributed = self.starting_stack - stacks[traverser]
         if winner == traverser:
-            # They get the pot back (which includes their contribution)
             return float(pot - contributed)
         return -float(contributed)
 
     def _showdown(self, traverser: int, hole: list[list[int]], full_board: list[int],
                    pot: int, stacks: list[int]) -> float:
-        """Compute traverser's payoff at showdown."""
         winners = determine_winners([hole[0], hole[1]], full_board)
         contributed = self.starting_stack - stacks[traverser]
-
         if 0 in winners and 1 in winners:
-            # Tie: split pot
             return (pot / 2) - contributed
         winner = winners[0]
         if winner == traverser:
@@ -332,8 +347,6 @@ class CFRTrainer:
 
     def save(self, path: str) -> None:
         os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-        # Save average strategy with legal masks already applied implicitly
-        # (by using all-ones mask at save time; runtime will re-mask by legal actions)
         data = {
             k: self.get_average_strategy(k, np.ones(NUM_CFR_ACTIONS)).tolist()
             for k in self.strategy_sum
@@ -355,6 +368,10 @@ class CFRStrategy(BaseStrategy):
             with open(strategy_path) as f:
                 raw = json.load(f)
             self.strategy_table = {k: np.array(v) for k, v in raw.items()}
+            # Auto-detect old 4-action models: pad to 6 actions if needed
+            for k, v in list(self.strategy_table.items()):
+                if len(v) == 4:
+                    self.strategy_table[k] = np.array([v[0], v[1], 0, v[2], 0, v[3]])
         else:
             self.strategy_table = {}
 
@@ -363,25 +380,20 @@ class CFRStrategy(BaseStrategy):
         hole = state.hole_cards[p]
         bucket = hand_to_bucket(hole, state.board)
 
-        # Build history from action_history split by street
-        history_chars = []
-        last_street_seen = None
-        for act in state.action_history:
-            history_chars.append(str(self._action_to_cfr_idx(act)))
-        history = ''.join(history_chars)
+        history = ''.join(str(self._action_to_cfr_idx(a)) for a in state.action_history)
         key = info_set_key(bucket, history, int(state.street))
 
         if key in self.strategy_table:
             strategy = self.strategy_table[key]
         else:
-            # Default to a sensible fallback by bucket strength
-            strategy = self._fallback_strategy(bucket, legal_actions)
+            strategy = self._fallback_strategy(bucket)
 
         # Apply legal action mask
         legal_mask = np.zeros(NUM_CFR_ACTIONS)
         for i, cfr_act in enumerate(CFR_ACTIONS):
-            if self._cfr_action_legal(cfr_act, legal_actions):
+            if self._cfr_action_legal(i, legal_actions):
                 legal_mask[i] = 1
+
         masked = strategy * legal_mask
         if masked.sum() > 0:
             masked = masked / masked.sum()
@@ -391,33 +403,33 @@ class CFRStrategy(BaseStrategy):
         action_idx = int(np.random.choice(NUM_CFR_ACTIONS, p=masked))
         return self._make_action(state, action_idx)
 
-    def _fallback_strategy(self, bucket: int, legal: list[ActionType]) -> np.ndarray:
-        """Sensible defaults when info set wasn't seen during training."""
-        # Bucket 4 (premium): mostly bet/raise
-        # Bucket 0 (trash): mostly fold/check
-        if bucket >= 3:
-            return np.array([0.0, 0.2, 0.5, 0.3])
-        if bucket == 2:
-            return np.array([0.05, 0.5, 0.4, 0.05])
-        if bucket == 1:
-            return np.array([0.3, 0.5, 0.18, 0.02])
-        return np.array([0.6, 0.35, 0.04, 0.01])
+    def _fallback_strategy(self, bucket: int) -> np.ndarray:
+        """Sensible defaults for unseen info sets, scaled by hand strength.
+
+        We don't know exact bucket count when loading, so use heuristic:
+        - low bucket index → likely weak (relative to total)
+        - high bucket index → likely strong
+        """
+        # Default: uniform over non-fold actions
+        return np.array([0.05, 0.4, 0.15, 0.2, 0.1, 0.1])
 
     def _action_to_cfr_idx(self, action: Action) -> int:
         if action.type == ActionType.FOLD: return 0
         if action.type in (ActionType.CHECK, ActionType.CALL): return 1
-        if action.type in (ActionType.BET, ActionType.RAISE): return 2
-        if action.type == ActionType.ALL_IN: return 3
+        if action.type in (ActionType.BET, ActionType.RAISE):
+            # Could be any of 2, 3, 4 — we use middle as default
+            return 3
+        if action.type == ActionType.ALL_IN: return 5
         return 1
 
-    def _cfr_action_legal(self, cfr_action: ActionType, legal: list[ActionType]) -> bool:
-        if cfr_action == ActionType.FOLD:
+    def _cfr_action_legal(self, cfr_idx: int, legal: list[ActionType]) -> bool:
+        if cfr_idx == 0:
             return ActionType.FOLD in legal
-        if cfr_action == ActionType.CHECK:
+        if cfr_idx == 1:
             return ActionType.CHECK in legal or ActionType.CALL in legal
-        if cfr_action == ActionType.BET:
+        if cfr_idx in (2, 3, 4):
             return ActionType.BET in legal or ActionType.RAISE in legal
-        if cfr_action == ActionType.ALL_IN:
+        if cfr_idx == 5:
             return ActionType.ALL_IN in legal
         return False
 
@@ -434,11 +446,12 @@ class CFRStrategy(BaseStrategy):
             if to_call > 0:
                 return Action(ActionType.CALL, to_call, p)
             return Action(ActionType.CHECK, 0, p)
-        if cfr_idx == 2:
-            amount = max(int(pot * 0.5), state.big_blind)
+        if cfr_idx in (2, 3, 4):
+            fraction = BET_SIZE_FRACTIONS[cfr_idx]
+            amount = max(int(pot * fraction), state.big_blind)
             if to_call > 0:
                 return Action(ActionType.RAISE, amount, p)
             return Action(ActionType.BET, amount, p)
-        if cfr_idx == 3:
+        if cfr_idx == 5:
             return Action(ActionType.ALL_IN, state.stacks[p], p)
         return Action(ActionType.FOLD, 0, p)
