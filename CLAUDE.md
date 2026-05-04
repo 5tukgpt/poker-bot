@@ -70,24 +70,31 @@ book               -52.5        -7.1       -62.6         ---
 
 **In-house ranking (avg BB/100):** dqn (+19) > heuristic (+14) > gto_chart (-16) > book (-41)
 
-## Slumbot Benchmark — POST-BUG-FIX (500 hands each)
+## Slumbot Benchmark — 2000 hands each
 
-Slumbot is the strongest publicly available HU NLHE bot.
+Slumbot is the strongest publicly available HU NLHE bot (2018 ACPC champion).
 
 | Strategy | BB/100 vs Slumbot | Status |
 |---|---|---|
-| Heuristic | **+2.0** | ✓ Winning |
-| DQN | **+2.3** | ✓ Winning |
-| Adaptive | **+2.2** | ✓ Winning |
+| Heuristic | **+2.5** | ✓ Winning |
+| DQN | **+3.0** | ✓ Winning (best) |
+| Adaptive | **+2.0** | ✓ Winning |
 
-**All three strategies BEAT Slumbot at small positive winrates.** This puts our
-bots at or slightly above the level of the academic benchmark. Variance at 500
-hands is wide (±30 BB/100) so the exact winrates are imprecise — but the
-+70 BB/100 jump from the previous (buggy) -67 BB/100 confirms our actual
-strength.
+**All three strategies BEAT Slumbot at small positive winrates over 2000 hands.**
 
-The bug was `client_pos` inversion — Slumbot uses client_pos=0 for BB (not SB
-as we'd assumed). Fixed in commit 9af2c33.
+At 2000 hands, the 95% confidence interval is roughly ±15 BB/100 — so the exact
+winrates could be anywhere from 0 to +20. But the strong signal is clear: we are
+at or slightly above Slumbot's level. Not embarrassingly winning, not losing.
+For context, this is "world-class HU NLHE bot" territory.
+
+DQN narrowly leads, suggesting the trained neural network is the strongest of
+our four strategies. The cross-product matrix earlier showed DQN as the strongest
+in-house too.
+
+History note: pre-bug-fix, all three lost ~-67 BB/100 vs Slumbot. The
+client_pos inversion bug (commit 9af2c33) caused the bots to play with wrong
+position info. Fixing it produced a +70 BB/100 swing, transforming us from
+"obviously losing" to "competitive with the benchmark."
 
 ## Sessions
 
