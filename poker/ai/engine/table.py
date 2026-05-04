@@ -141,27 +141,47 @@ class Table:
         pot: int,
         action_history: list[Action],
     ) -> int:
+        # First to act:
+        # Preflop HU: button (SB) acts first
+        # Preflop 3+: UTG = (button + 3) % n, but in 3-player UTG IS the button
+        # Postflop: first non-folded player after button
         if street == Street.PREFLOP:
             if self.num_players == 2:
-                first_to_act = self.button  # SB/button acts first preflop in HU
+                first_to_act = self.button
             else:
                 first_to_act = (self.button + 3) % self.num_players
         else:
-            if self.num_players == 2:
-                first_to_act = (self.button + 1) % self.num_players  # BB acts first postflop
-            else:
-                first_to_act = (self.button + 1) % self.num_players
+            first_to_act = (self.button + 1) % self.num_players
 
-        last_raiser = -1
-        acted = set()
+        # Find the actual first-to-act (skipping folded/all-in players)
+        first_to_act = self._next_to_act(first_to_act, folded, all_in)
+        if first_to_act == -1:
+            return pot  # nobody can act
+
+        # Track who has acted SINCE the last raise (or since start of round)
+        # Round ends when: (1) only one non-folded player left, OR
+        # (2) all players who CAN act have done so AND all bets are matched
+        acted_since_last_aggression: set[int] = set()
         current_idx = first_to_act
+        max_iterations = self.num_players * 20  # safety cap
+        iters = 0
 
-        while True:
+        while iters < max_iterations:
+            iters += 1
+
+            if self._count_in_hand(folded) <= 1:
+                break  # only one player left, hand over
+
             if folded[current_idx] or all_in[current_idx]:
                 current_idx = (current_idx + 1) % self.num_players
-                if current_idx == first_to_act and len(acted) >= self._count_active(folded, all_in):
-                    break
                 continue
+
+            # Check if round ends BEFORE asking this player to act
+            max_bet = max(current_bets)
+            if (current_idx in acted_since_last_aggression
+                    and current_bets[current_idx] == max_bet):
+                # This player has already acted on the current bet level
+                break
 
             state = GameState(
                 num_players=self.num_players,
@@ -188,26 +208,38 @@ class Table:
             action = self.strategies[current_idx].choose_action(state, legal)
             action = self._validate_action(action, state, current_idx)
             action_history.append(action)
+            pot_before = pot
             pot = self._apply_action(action, current_bets, folded, all_in, pot)
-            acted.add(current_idx)
 
+            # If this was a bet/raise, reset who has acted since the aggression
             if action.type in (ActionType.RAISE, ActionType.BET):
-                last_raiser = current_idx
-                acted = {current_idx}
+                acted_since_last_aggression = {current_idx}
+            elif action.type == ActionType.ALL_IN:
+                # All-in might or might not be a raise depending on amount
+                if pot - pot_before > 0 and current_bets[current_idx] > max(
+                    cb for i, cb in enumerate(current_bets) if i != current_idx
+                ):
+                    acted_since_last_aggression = {current_idx}
+                else:
+                    acted_since_last_aggression.add(current_idx)
+            else:
+                acted_since_last_aggression.add(current_idx)
 
             current_idx = (current_idx + 1) % self.num_players
 
-            active_count = self._count_active(folded, all_in)
-            if active_count <= 1:
-                break
-
-            all_acted = len(acted) >= active_count
-            if all_acted and (last_raiser == -1 or current_idx == last_raiser):
-                break
-            if current_idx == first_to_act and all_acted and last_raiser == -1:
-                break
-
         return pot
+
+    def _next_to_act(self, start_idx: int, folded: list[bool], all_in: list[bool]) -> int:
+        """Find next player who can act, starting from start_idx. Returns -1 if none."""
+        for offset in range(self.num_players):
+            idx = (start_idx + offset) % self.num_players
+            if not folded[idx] and not all_in[idx]:
+                return idx
+        return -1
+
+    def _count_in_hand(self, folded: list[bool]) -> int:
+        """Count players who haven't folded (includes all-in)."""
+        return sum(1 for f in folded if not f)
 
     def _validate_action(self, action: Action, state: GameState, player: int) -> Action:
         legal = state.legal_actions()
