@@ -169,32 +169,33 @@ def parse_action_history(action_str: str, our_pos: int) -> list[Action]:
     """Parse Slumbot's action string into a list of Action objects.
 
     Slumbot positions: 0 = button/SB acts first preflop, 1 = BB.
-    Our internal Action.player_idx uses the same convention (0 = us if our_pos=0).
+    Each Action gets a 'street' index (0=preflop, 1=flop, 2=turn, 3=river)
+    so observers know what street the action occurred on.
     """
     actions: list[Action] = []
     sz = len(action_str)
     i = 0
-    pos = 0  # SB acts first preflop
+    pos = 0
+    street = 0
     street_last_bet_to = BIG_BLIND
-    just_ended_street = False
 
     while i < sz:
         c = action_str[i]
         i += 1
         if c == "/":
+            street += 1
             pos = 1  # BB acts first postflop in HU
             street_last_bet_to = 0
-            just_ended_street = False
             continue
         if c == "k":
-            actions.append(Action(ActionType.CHECK, 0, pos))
+            actions.append(Action(ActionType.CHECK, 0, pos, street=street))
             pos = (pos + 1) % 2
         elif c == "c":
             call_amount = street_last_bet_to
-            actions.append(Action(ActionType.CALL, call_amount, pos))
+            actions.append(Action(ActionType.CALL, call_amount, pos, street=street))
             pos = (pos + 1) % 2
         elif c == "f":
-            actions.append(Action(ActionType.FOLD, 0, pos))
+            actions.append(Action(ActionType.FOLD, 0, pos, street=street))
             break
         elif c == "b":
             j = i
@@ -202,13 +203,12 @@ def parse_action_history(action_str: str, our_pos: int) -> list[Action]:
                 i += 1
             new_total = int(action_str[j:i])
             increment = new_total - street_last_bet_to
-            # All-in if betting full stack
             if new_total >= STACK_SIZE:
-                actions.append(Action(ActionType.ALL_IN, increment, pos))
+                actions.append(Action(ActionType.ALL_IN, increment, pos, street=street))
             elif street_last_bet_to == 0:
-                actions.append(Action(ActionType.BET, increment, pos))
+                actions.append(Action(ActionType.BET, increment, pos, street=street))
             else:
-                actions.append(Action(ActionType.RAISE, increment, pos))
+                actions.append(Action(ActionType.RAISE, increment, pos, street=street))
             street_last_bet_to = new_total
             pos = (pos + 1) % 2
 
@@ -280,8 +280,7 @@ def _remap_history(actions: list[Action], our_pos: int) -> list[Action]:
     """Remap player_idx so we are always player 0 in our internal state."""
     if our_pos == 0:
         return actions  # already aligned
-    # Swap player_idx 0 ↔ 1
-    return [Action(a.type, a.amount, 1 - a.player_idx) for a in actions]
+    return [Action(a.type, a.amount, 1 - a.player_idx, street=a.street) for a in actions]
 
 
 def our_action_to_slumbot(action: Action, parsed_state: dict) -> str:

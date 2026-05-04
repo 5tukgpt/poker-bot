@@ -24,14 +24,24 @@ from .heuristic import HeuristicStrategy
 from .opponent_model import OpponentStats, PlayerType
 
 
-# Strategy name → strategy mapping for each opponent type
+# Strategy name → strategy mapping for each opponent type.
+#
+# Empirically tuned via cross-product benchmark (scripts/cross_product.py)
+# at 1000 hands per matchup. Best counter per in-house bot:
+#   vs heuristic-style (tight value player) → DQN (+43 BB/100)
+#   vs dqn-style (aggressive RL player)     → book (-7 BB/100, least bad)
+#   vs gto_chart-style (TAG GTO player)     → heuristic (+36 BB/100)
+#   vs book-style (LAG aggressive player)   → heuristic (+57 BB/100)
+#
+# Strongest overall: DQN at +19 BB/100 average. Use as default for unknown.
+# Confirmed against Slumbot: NIT classification → DQN gives best result (-26 BB/100).
 DEFAULT_TYPE_TO_STRATEGY = {
-    PlayerType.UNKNOWN: 'heuristic',
-    PlayerType.FISH:    'heuristic',
-    PlayerType.NIT:     'book',
-    PlayerType.LAG:     'heuristic',
-    PlayerType.TAG:     'dqn',
-    PlayerType.MANIAC:  'heuristic',
+    PlayerType.UNKNOWN: 'dqn',         # strongest overall — safe default
+    PlayerType.NIT:     'dqn',         # tight opponents — DQN exploits well
+    PlayerType.TAG:     'heuristic',   # GTO-style players — heuristic surprisingly beats them
+    PlayerType.LAG:     'heuristic',   # aggressive players — call down with equity
+    PlayerType.FISH:    'heuristic',   # value-bet stations
+    PlayerType.MANIAC:  'heuristic',   # call wider, don't bluff into them
 }
 
 

@@ -113,11 +113,15 @@ class OpponentStats:
         from ..engine.action import ActionType
         from ..engine.game_state import Street
 
-        bb = state.big_blind
-        is_voluntary = (action.amount > 0 and action.type != ActionType.FOLD) \
-                       and not (state.street == Street.PREFLOP and action.amount == bb)
+        # Prefer action.street if set (set by parsers that know which street an action
+        # occurred on); otherwise fall back to state.street.
+        action_street = (
+            Street(action.street) if action.street is not None else state.street
+        )
 
-        if state.street == Street.PREFLOP:
+        bb = state.big_blind
+
+        if action_street == Street.PREFLOP:
             if action.type == ActionType.FOLD:
                 pass
             elif action.type in (ActionType.CALL, ActionType.CHECK):

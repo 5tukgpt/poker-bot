@@ -106,5 +106,6 @@ class TestStrategyMappingDefault:
         for player_type in PlayerType:
             assert player_type in DEFAULT_TYPE_TO_STRATEGY
 
-    def test_unknown_uses_safe_default(self):
-        assert DEFAULT_TYPE_TO_STRATEGY[PlayerType.UNKNOWN] == 'heuristic'
+    def test_unknown_uses_strongest_default(self):
+        # Empirically tuned: DQN is our strongest avg strategy (+19 BB/100)
+        assert DEFAULT_TYPE_TO_STRATEGY[PlayerType.UNKNOWN] == 'dqn'
