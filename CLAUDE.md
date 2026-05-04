@@ -60,20 +60,29 @@ python scripts/benchmark.py --hands 1000                # all strategies head-to
 
 ## Current Benchmark
 
-After 20K CFR iterations (post-bug-fix) + 10K DQN training hands. 500 hands per matchup:
+2000 hands per matchup (tighter variance):
 
 ```
-           heuristic       cfr       dqn  ensemble
-heuristic        ---    +413.2      -3.0    +158.5
-cfr           -413.2       ---    -274.8    -451.1
-dqn             +3.0    +274.8       ---     +13.3
-ensemble      -158.5    +451.1     -13.3       ---
+               gto_chart   heuristic         dqn
+gto_chart            ---       -50.0        -6.0
+heuristic          +50.0         ---       -14.3
+dqn                 +6.0       +14.3         ---
 ```
 
-Ranking: **dqn ≈ heuristic > ensemble > cfr**
+Ranking: **heuristic > dqn > gto_chart**, all within 50 BB/100.
 
-Notes:
-- DQN reached parity with heuristic after 10K self-play hands (epsilon=0.05)
-- CFR fixed (4-5x improvement vs prior buggy version) — remaining gap from crude 5-bucket abstraction
-- CFR strategy table grew from 5K to 21K info sets after the bug fix exposed full game tree
-- Ensemble dragged down by CFR's residual weakness; rebalancing weights or removing CFR vote could help
+## Strategy Inventory
+
+| Strategy | Approach | Status |
+|---|---|---|
+| `heuristic` | Preflop categories + Monte Carlo equity vs pot odds | Strongest baseline |
+| `dqn` | Pure-numpy Double DQN, 64-dim state, 10K self-play hands | Near-parity with heuristic |
+| `gto_chart` | Hard-coded HU NLHE preflop ranges + equity postflop | Competitive baseline, no training cost |
+| `cfr` | External-sampling MCCFR with 5-bucket rule abstraction | **Deprecated** — k-means experiment proved CFR-from-scratch is impractical on a laptop (3.26M info sets after 30K iters, far from converged) |
+| `ensemble` | Weighted vote across heuristic + CFR + DQN | Available but currently dragged by stale CFR |
+
+## Key Lessons
+
+1. **CFR-from-scratch is hard.** Even with bug fixes and k-means abstraction, training to convergence requires solver-class hardware. Borrowing published GTO charts is more pragmatic.
+2. **DQN works.** Pure-numpy Double DQN reached competitive play in 10K self-play hands. Self-play training is a viable evolution path.
+3. **Hand-coded heuristics are surprisingly strong.** Equity vs pot odds is a powerful baseline that's hard to beat with little training.
